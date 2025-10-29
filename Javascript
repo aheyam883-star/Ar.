@@ -1,0 +1,480 @@
+const express = require('express');
+const cors = require('cors');
+const bodyParser = require('body-parser');
+const sqlite3 = require('sqlite3').verbose();
+const path = require('path');
+
+const app = express();
+const PORT = process.env.PORT || 5000;
+
+// Middleware
+app.use(cors());
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
+
+// قاعدة البيانات
+const db = new sqlite3.Database('./database.db', (err) => {
+  if (err) {
+    console.error('Error opening database:', err.message);
+  } else {
+    console.log('Connected to SQLite database.');
+    initializeDatabase();
+  }
+});
+
+// تهيئة الجداول
+function initializeDatabase() {
+  // جدول المستخدمين
+  db.run(`CREATE TABLE IF NOT EXISTS Users (
+    UserID INTEGER PRIMARY KEY AUTOINCREMENT,
+    FullName TEXT NOT NULL,
+    UserType TEXT NOT NULL CHECK(UserType IN ('مزود', 'مدير')),
+    Email TEXT UNIQUE,
+    PhoneNumber TEXT,
+    IsVerified BOOLEAN DEFAULT 0,
+    CreatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+
+  // جدول التخصصات
+  db.run(`CREATE TABLE IF NOT EXISTS Specializations (
+    SpecID INTEGER PRIMARY KEY AUTOINCREMENT,
+    SpecName TEXT NOT NULL,
+    IconURL TEXT,
+    CreatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+
+  // جدول الخدمات
+  db.run(`CREATE TABLE IF NOT EXISTS Services (
+    ServiceID INTEGER PRIMARY KEY AUTOINCREMENT,
+    UserID INTEGER,
+    SpecID INTEGER,
+    Title TEXT NOT NULL,
+    Description TEXT,
+    BasePrice DECIMAL(10,2),
+    CreatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (UserID) REFERENCES Users(UserID),
+    FOREIGN KEY (SpecID) REFERENCES Specializations(SpecID)
+  )`);
+
+  // جدول طلبات التواصل
+  db.run(`CREATE TABLE IF NOT EXISTS ContactRequests (
+    RequestID INTEGER PRIMARY KEY AUTOINCREMENT,
+    RequestedServiceID INTEGER,
+    ClientPhoneNumber TEXT NOT NULL,
+    ClientRequestDescription TEXT,
+    Status TEXT DEFAULT 'قيد المراجعة',
+    CreatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (RequestedServiceID) REFERENCES Services(ServiceID)
+  )`);
+
+  // جدول المعاملات
+  db.run(`CREATE TABLE IF NOT EXISTS Transactions (
+    TransID INTEGER PRIMARY KEY AUTOINCREMENT,
+    RequestID INTEGER,
+    TotalAmount DECIMAL(10,2),
+    PlatformFee DECIMAL(10,2),
+    ProfessionalPayout DECIMAL(10,2),
+    PaymentStatus TEXT DEFAULT 'معلق',
+    CreatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (RequestID) REFERENCES ContactRequests(RequestID)
+  )`);
+
+  // إضافة بيانات تجريبية
+  addSampleData();
+}
+
+function addSampleData() {
+  // إضافة تخصصات
+  const specializations = [
+    { name: 'مصورون', icon: '📷' },
+    { name: 'مترجمون', icon: '🌐' },
+    { name: 'مصممون', icon: '🎨' },
+    { name: 'مبرمجون', icon: '💻' },
+    { name: 'كتاب', icon: '✍️' },
+    { name: 'مدربون', icon: '🏋️' }
+  ];
+
+  specializations.forEach(spec => {
+    db.run(`INSERT OR IGNORE INTO Specializations (SpecName, IconURL) VALUES (?, ?)`, 
+      [spec.name, spec.icon]);
+  });
+
+  // إضافة مستخدمين تجريبيين
+  db.run(`INSERT OR IGNORE INTO Users (FullName, UserType, Email, PhoneNumber, IsVerified) VALUES 
+    ('أحمد محمد', 'مزود', 'ahmed@example.com', '0512345678', 1),
+    ('فاطمة عبدالله', 'مزود', 'fatima@example.com', '0554321098', 1),
+    ('مدير النظام', 'مدير', 'admin@example.com', '0500000000', 1)`);
+}
+
+// الروات (Routes)
+
+// جلب جميع التخصصات
+app.get('/api/specializations', (req, res) => {
+  db.all('SELECT * FROM Specializations ORDER BY SpecName', (err, rows) => {
+    if (err) {
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    res.json(rows);
+  });
+});
+
+// جلب الخدمات حسب التخصص
+app.get('/api/services/:specId', (req, res) => {
+  const specId = req.params.specId;
+  const sql = `
+    SELECT s.*, u.FullName, u.IsVerified 
+    FROM Services s 
+    JOIN Users u ON s.UserID = u.UserID 
+    WHERE s.SpecID = ? AND u.IsVerified = 1
+  `;
+  
+  db.all(sql, [specId], (err, rows) => {
+    if (err) {
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    res.json(rows);
+  });
+});
+
+// إنشاء طلب تواصل جديد
+app.post('/api/contact-requests', (req, res) => {
+  const { requestedServiceID, clientPhoneNumber, clientRequestDescription } = req.body;
+  
+  const sql = `INSERT INTO ContactRequests (RequestedServiceID, ClientPhoneNumber, ClientRequestDescription) VALUES (?, ?, ?)`;
+  
+  db.run(sql, [requestedServiceID, clientPhoneNumber, clientRequestDescription], function(err) {
+    if (err) {
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    res.json({ 
+      message: 'تم إرسال طلبك بنجاح', 
+      requestID: this.lastID 
+    });
+  });
+});
+
+// جلب طلبات التواصل
+app.get('/api/contact-requests', (req, res) => {
+  const sql = `
+    SELECT cr.*, s.Title as ServiceTitle, u.FullName as ProfessionalName 
+    FROM ContactRequests cr 
+    JOIN Services s ON cr.RequestedServiceID = s.ServiceID 
+    JOIN Users u ON s.UserID = u.UserID 
+    ORDER BY cr.CreatedAt DESC
+  `;
+  
+  db.all(sql, [], (err, rows) => {
+    if (err) {
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    res.json(rows);
+  });
+});
+
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
+});import React from 'react';
+import { NavigationContainer } from '@react-navigation/native';
+import { createStackNavigator } from '@react-navigation/stack';
+import { StatusBar } from 'expo-status-bar';
+
+// الشاشات
+import HomeScreen from './src/screens/HomeScreen';
+import SpecializationsScreen from './src/screens/SpecializationsScreen';
+import ProfessionalsScreen from './src/screens/ProfessionalsScreen';
+import RequestScreen from './src/screens/RequestScreen';
+import ConfirmationScreen from './src/screens/ConfirmationScreen';
+
+const Stack = createStackNavigator();
+
+export default function App() {
+  return (
+    <NavigationContainer>
+      <StatusBar style="auto" />
+      <Stack.Navigator 
+        initialRouteName="Home"
+        screenOptions={{
+          headerStyle: {
+            backgroundColor: '#2E86AB',
+          },
+          headerTintColor: '#fff',
+          headerTitleStyle: {
+            fontWeight: 'bold',
+          },
+        }}
+      >
+        <Stack.Screen 
+          name="Home" 
+          component={HomeScreen}
+          options={{ title: 'المتخصصين الجامعيين' }}
+        />
+        <Stack.Screen 
+          name="Specializations" 
+          component={SpecializationsScreen}
+          options={{ title: 'التخصصات' }}
+        />
+        <Stack.Screen 
+          name="Professionals" 
+          component={ProfessionalsScreen}
+          options={{ title: 'المحترفين' }}
+        />
+        <Stack.Screen 
+          name="Request" 
+          component={RequestScreen}
+          options={{ title: 'طلب خدمة' }}
+        />
+        <Stack.Screen 
+          name="Confirmation" 
+          component={ConfirmationScreen}
+          options={{ headerShown: false }}
+        />
+      </Stack.Navigator>
+    </NavigationContainer>
+  );
+  }import React from 'react';
+import {
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  StyleSheet,
+  ScrollView,
+  Image
+} from 'react-native';
+
+const HomeScreen = ({ navigation }) => {
+  return (
+    <ScrollView style={styles.container}>
+      {/* الهيدر */}
+      <View style={styles.header}>
+        <Text style={styles.logo}>المتخصصين الجامعيين</Text>
+        <Text style={styles.subtitle}>ابحث عن محترفك المعتمد</Text>
+      </View>
+
+      {/* شريط البحث */}
+      <View style={styles.searchContainer}>
+        <TextInput
+          style={styles.searchInput}
+          placeholder="ابحث عن متخصصك الجامعي المعتمد..."
+          placeholderTextColor="#999"
+        />
+        <View style={styles.searchIcon}>🔍</View>
+      </View>
+
+      {/* زر التخصصات */}
+      <TouchableOpacity
+        style={styles.ctaButton}
+        onPress={() => navigation.navigate('Specializations')}
+      >
+        <Text style={styles.ctaText}>تصفح التخصصات</Text>
+      </TouchableOpacity>
+
+      {/* المميزات */}
+      <View style={styles.features}>
+        <View style={styles.featureCard}>
+          <Text style={styles.featureIcon}>🎓</Text>
+          <Text style={styles.featureTitle}>محترفون معتمدون</Text>
+          <Text style={styles.featureDesc}>جميع المتخصصين حاصلين على مؤهلات جامعية</Text>
+        </View>
+        
+        <View style={styles.featureCard}>
+          <Text style={styles.featureIcon}>💼</Text>
+          <Text style={styles.featureTitle}>خدمات متنوعة</Text>
+          <Text style={styles.featureDesc}>مجموعة واسعة من التخصصات المهنية</Text>
+        </View>
+        
+        <View style={styles.featureCard}>
+          <Text style={styles.featureIcon}>🛡️</Text>
+          <Text style={styles.featureTitle}>وساطة آمنة</Text>
+          <Text style={styles.featureDesc}>نضمن حقوقك من خلال نظام وساطة موثوق</Text>
+        </View>
+      </View>
+    </ScrollView>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#fff',
+  },
+  header: {
+    alignItems: 'center',
+    paddingVertical: 40,
+    backgroundColor: '#2E86AB',
+  },
+  logo: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    color: '#fff',
+    marginBottom: 8,
+  },
+  subtitle: {
+    fontSize: 16,
+    color: '#fff',
+    opacity: 0.9,
+  },
+  searchContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    margin: 20,
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: '#2E86AB',
+    paddingHorizontal: 15,
+  },
+  searchInput: {
+    flex: 1,
+    height: 50,
+    fontSize: 16,
+    textAlign: 'right',
+  },
+  searchIcon: {
+    marginLeft: 10,
+  },
+  ctaButton: {
+    backgroundColor: '#2E86AB',
+    marginHorizontal: 20,
+    height: 50,
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 30,
+  },
+  ctaText: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  features: {
+    padding: 20,
+  },
+  featureCard: {
+    backgroundColor: '#f8f9fa',
+    padding: 20,
+    borderRadius: 12,
+    marginBottom: 15,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#e9ecef',
+  },
+  featureIcon: {
+    fontSize: 40,
+    marginBottom: 10,
+  },
+  featureTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#2E86AB',
+    marginBottom: 5,
+  },
+  featureDesc: {
+    fontSize: 14,
+    color: '#666',
+    textAlign: 'center',
+  },
+});
+
+export default HomeScreen;http://localhost:5000/apistyles.nameaxios.postimport React from 'react';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet
+} from 'react-native';
+
+const ConfirmationScreen = ({ navigation }) => {
+  return (
+    <View style={styles.container}>
+      <View style={styles.content}>
+        <Text style={styles.icon}>✓</Text>
+        <Text style={styles.title}>تم إرسال طلبك بنجاح!</Text>
+        <Text style={styles.message}>
+          مسرورين في تعاملك معنا، سيتم التواصل معك في أقرب وقت.
+        </Text>
+        
+        <TouchableOpacity
+          style={styles.homeButton}
+          onPress={() => navigation.navigate('Home')}
+        >
+          <Text style={styles.homeButtonText}>العودة للرئيسية</Text>
+        </TouchableOpacity>
+        
+        <TouchableOpacity
+          style={styles.specializationsButton}
+          onPress={() => navigation.navigate('Specializations')}
+        >
+          <Text style={styles.specializationsButtonText}>تصفح المزيد من الخدمات</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#fff',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  content: {
+    alignItems: 'center',
+    width: '100%',
+  },
+  icon: {
+    fontSize: 80,
+    color: '#28a745',
+    marginBottom: 30,
+  },
+  title: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#2E86AB',
+    textAlign: 'center',
+    marginBottom: 15,
+  },
+  message: {
+    fontSize: 18,
+    color: '#666',
+    textAlign: 'center',
+    lineHeight: 28,
+    marginBottom: 40,
+  },
+  homeButton: {
+    backgroundColor: '#2E86AB',
+    paddingVertical: 15,
+    paddingHorizontal: 30,
+    borderRadius: 8,
+    marginBottom: 15,
+    width: '100%',
+    alignItems: 'center',
+  },
+  homeButtonText: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  specializationsButton: {
+    borderWidth: 2,
+    borderColor: '#2E86AB',
+    paddingVertical: 15,
+    paddingHorizontal: 30,
+    borderRadius: 8,
+    width: '100%',
+    alignItems: 'center',
+  },
+  specializationsButtonText: {
+    color: '#2E86AB',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+});
+
+export default ConfirmationScreen;
