@@ -1,0 +1,13 @@
+
+## 🚀 تعليمات الرفع على GitHub
+
+1. **إنشاء مستودع جديد على GitHub**
+   - اذهب إلى GitHub وأنشئ repository جديد باسم `professional-services-app`
+
+2. **تهيئة Git محلياً**
+```bash
+# في المجلد الرئيسي للمشروع
+git init
+git add .
+git commit -m "First commit: Complete Professional Services App"
+### .gitignore
